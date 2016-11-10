@@ -30,6 +30,7 @@ module TyCoRep (
         KindOrType, Kind,
         PredType, ThetaType,      -- Synonyms
         ArgFlag(..),
+        Rig(..),
 
         -- * Coercions
         Coercion(..), LeftOrRight(..),
@@ -38,7 +39,7 @@ module TyCoRep (
 
         -- * Functions over types
         mkTyConTy, mkTyVarTy, mkTyVarTys,
-        mkFunTy, mkFunTys, mkForAllTy, mkForAllTys,
+        mkFunTy, mkFunTyOm, mkFunTys, mkForAllTy, mkForAllTys,
         mkPiTy, mkPiTys,
         isLiftedTypeKind, isUnliftedTypeKind,
         isCoercionType, isRuntimeRepTy, isRuntimeRepVar,
@@ -172,6 +173,36 @@ import GHC.Stack (CallStack)
 #endif
 
 {-
+************************************************************************
+*                                                                      *
+\subsection{Weights}
+*                                                                      *
+************************************************************************
+-}
+
+-- TODO: arnaud: clean up
+data Rig =  -- Zero |
+  One | Omega
+  deriving (Eq,Ord,Data.Data)
+
+instance Num Rig where
+  -- Zero * _ = Zero
+  -- _ * Zero = Zero
+  Omega * One = Omega
+  One * Omega = Omega
+  One * One   = One
+  Omega * Omega = Omega
+
+  -- Zero + x = x
+  -- x + Zero = x
+  _ + _ = Omega
+
+-- instance Outputable Rig where
+--   ppr One = fromString "1"
+--   ppr Omega = fromString "ω"
+
+
+{-
 %************************************************************************
 %*                                                                      *
                         TyThing
@@ -277,7 +308,10 @@ data Type
         {-# UNPACK #-} !TyVarBinder
         Type            -- ^ A Π type.
 
-  | FunTy Type Type     -- ^ t1 -> t2   Very common, so an important special case
+  | FunTy Rig Type Type     -- ^ t1 ->_p t2   Very common, so an important special case
+
+    -- TODO: arnaud: also PI
+    -- TODO: arnaud: ignored by Core. Nonetheless, maybe should update the Formalism
 
   | LitTy TyLit     -- ^ Type literals are similar to type constructors.
 
@@ -671,12 +705,17 @@ mkTyVarTys = map mkTyVarTy -- a common use of mkTyVarTy
 
 infixr 3 `mkFunTy`      -- Associates to the right
 -- | Make an arrow type
-mkFunTy :: Type -> Type -> Type
-mkFunTy arg res = FunTy arg res
+mkFunTy :: Rig -> Type -> Type -> Type
+mkFunTy weight arg res = FunTy weight arg res
+
+-- | Special, common, case: Arrow type with weight Omega
+mkFunTyOm :: Type -> Type -> Type
+mkFunTyOm = mkFunTy Omega
 
 -- | Make nested arrow types
 mkFunTys :: [Type] -> Type -> Type
-mkFunTys tys ty = foldr mkFunTy ty tys
+mkFunTys tys ty = foldr (mkFunTy Omega) ty tys
+-- FIXME: arnaud: see at use-site how to best refine this. Probably the list argument should be of pairs `(Rig,Type)`.
 
 mkForAllTy :: TyVar -> ArgFlag -> Type -> Type
 mkForAllTy tv vis ty = ForAllTy (TvBndr tv vis) ty
@@ -686,7 +725,7 @@ mkForAllTys :: [TyVarBinder] -> Type -> Type
 mkForAllTys tyvars ty = foldr ForAllTy ty tyvars
 
 mkPiTy :: TyBinder -> Type -> Type
-mkPiTy (Anon ty1) ty2 = FunTy ty1 ty2
+mkPiTy (Anon ty1) ty2 = FunTy Omega ty1 ty2 -- TODO: Arnaud: fix
 mkPiTy (Named tvb) ty = ForAllTy tvb ty
 
 mkPiTys :: [TyBinder] -> Type -> Type
@@ -1409,7 +1448,7 @@ tyCoFVsOfType (TyVarTy v)        a b c = (unitFV v `unionFV` tyCoFVsOfType (tyVa
 tyCoFVsOfType (TyConApp _ tys)   a b c = tyCoFVsOfTypes tys a b c
 tyCoFVsOfType (LitTy {})         a b c = emptyFV a b c
 tyCoFVsOfType (AppTy fun arg)    a b c = (tyCoFVsOfType fun `unionFV` tyCoFVsOfType arg) a b c
-tyCoFVsOfType (FunTy arg res)    a b c = (tyCoFVsOfType arg `unionFV` tyCoFVsOfType res) a b c
+tyCoFVsOfType (FunTy _ arg res)  a b c = (tyCoFVsOfType arg `unionFV` tyCoFVsOfType res) a b c
 tyCoFVsOfType (ForAllTy bndr ty) a b c = tyCoFVsBndr bndr (tyCoFVsOfType ty)  a b c
 tyCoFVsOfType (CastTy ty co)     a b c = (tyCoFVsOfType ty `unionFV` tyCoFVsOfCo co) a b c
 tyCoFVsOfType (CoercionTy co)    a b c = tyCoFVsOfCo co a b c
@@ -1519,7 +1558,7 @@ coVarsOfType (TyVarTy v)         = coVarsOfType (tyVarKind v)
 coVarsOfType (TyConApp _ tys)    = coVarsOfTypes tys
 coVarsOfType (LitTy {})          = emptyVarSet
 coVarsOfType (AppTy fun arg)     = coVarsOfType fun `unionVarSet` coVarsOfType arg
-coVarsOfType (FunTy arg res)     = coVarsOfType arg `unionVarSet` coVarsOfType res
+coVarsOfType (FunTy _ arg res)   = coVarsOfType arg `unionVarSet` coVarsOfType res
 coVarsOfType (ForAllTy (TvBndr tv _) ty)
   = (coVarsOfType ty `delVarSet` tv)
     `unionVarSet` coVarsOfType (tyVarKind tv)
@@ -2189,7 +2228,7 @@ subst_ty subst ty
                 -- by [Int], represented with TyConApp
     go (TyConApp tc tys) = let args = map go tys
                            in  args `seqList` TyConApp tc args
-    go (FunTy arg res)   = (FunTy $! go arg) $! go res
+    go (FunTy w arg res) = ((FunTy $! w) $! go arg) $! go res
     go (ForAllTy (TvBndr tv vis) ty)
                          = case substTyVarBndrUnchecked subst tv of
                              (subst', tv') ->
@@ -2542,9 +2581,9 @@ defaultRuntimeRepVars' subs (ForAllTy (TvBndr var vis) ty)
     let var' = var { varType = defaultRuntimeRepVars' subs (varType var) }
     in ForAllTy (TvBndr var' vis) (defaultRuntimeRepVars' subs ty)
 
-defaultRuntimeRepVars' subs (FunTy kind ty) =
-    FunTy (defaultRuntimeRepVars' subs kind)
-          (defaultRuntimeRepVars' subs ty)
+defaultRuntimeRepVars' subs (FunTy w kind ty) =
+    FunTy w (defaultRuntimeRepVars' subs kind)
+            (defaultRuntimeRepVars' subs ty)
 
 defaultRuntimeRepVars' subs (TyVarTy var)
   | var `elemVarSet` subs                      = ptrRepLiftedTy
@@ -2711,7 +2750,7 @@ ppr_sigma_type dflags False orig_ty
           -> ([TyVar], [PredType], Type)
     split bndr_acc theta_acc (ForAllTy (TvBndr tv vis) ty)
       | isInvisibleArgFlag vis  = split (tv : bndr_acc) theta_acc ty
-    split bndr_acc theta_acc (FunTy ty1 ty2)
+    split bndr_acc theta_acc (FunTy _ ty1 ty2)
       | isPredTy ty1            = split bndr_acc (ty1 : theta_acc) ty2
     split bndr_acc theta_acc ty = (reverse bndr_acc, reverse theta_acc, ty)
 
@@ -2726,12 +2765,12 @@ ppr_sigma_type _ _ ty
     split1 bndrs (ForAllTy bndr ty) = split1 (bndr:bndrs) ty
     split1 bndrs ty                 = (reverse bndrs, ty)
 
-    split2 ps (FunTy ty1 ty2) | isPredTy ty1 = split2 (ty1:ps) ty2
+    split2 ps (FunTy _ ty1 ty2) | isPredTy ty1 = split2 (ty1:ps) ty2
     split2 ps ty                             = (reverse ps, ty)
 
     -- We don't want to lose synonyms, so we mustn't use splitFunTys here.
 ppr_fun_tail :: Type -> [SDoc]
-ppr_fun_tail (FunTy ty1 ty2)
+ppr_fun_tail (FunTy _ ty1 ty2)
   | not (isPredTy ty1) = ppr_type FunPrec ty1 : ppr_fun_tail ty2
 ppr_fun_tail other_ty = [ppr_type TopPrec other_ty]
 
@@ -3204,7 +3243,7 @@ tidyType env (TyVarTy tv)         = TyVarTy (tidyTyVarOcc env tv)
 tidyType env (TyConApp tycon tys) = let args = tidyTypes env tys
                                     in args `seqList` TyConApp tycon args
 tidyType env (AppTy fun arg)      = (AppTy $! (tidyType env fun)) $! (tidyType env arg)
-tidyType env (FunTy fun arg)      = (FunTy $! (tidyType env fun)) $! (tidyType env arg)
+tidyType env (FunTy w fun arg)    = ((FunTy $! w) $! (tidyType env fun)) $! (tidyType env arg)
 tidyType env (ty@(ForAllTy{}))    = mkForAllTys' (zip tvs' vis) $! tidyType env' body_ty
   where
     (tvs, vis, body_ty) = splitForAllTys' ty
