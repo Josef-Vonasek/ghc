@@ -167,6 +167,7 @@ import UniqFM
 
 -- libraries
 import qualified Data.Data as Data hiding ( TyCon )
+import Data.Foldable ( toList )
 import Data.List
 import Data.IORef ( IORef )   -- for CoercionHole
 #if MIN_VERSION_GLASGOW_HASKELL(7,10,2,0)
@@ -1432,7 +1433,7 @@ tyCoFVsBndr (TvBndr tv _) fvs = (delFV tv fvs)
 -- | Returns free variables of types, including kind variables as
 -- a non-deterministic set. For type synonyms it does /not/ expand the
 -- synonym.
-tyCoVarsOfTypes :: [Type] -> TyCoVarSet
+tyCoVarsOfTypes :: (Traversable t) => t Type -> TyCoVarSet
 -- See Note [Free variables of types]
 tyCoVarsOfTypes tys = fvVarSet $ tyCoFVsOfTypes tys
 
@@ -1459,10 +1460,12 @@ tyCoVarsOfTypesList :: [Type] -> [TyCoVar]
 -- See Note [Free variables of types]
 tyCoVarsOfTypesList tys = fvVarList $ tyCoFVsOfTypes tys
 
-tyCoFVsOfTypes :: [Type] -> FV
+tyCoFVsOfTypes :: (Traversable t) => t Type -> FV
 -- See Note [Free variables of types]
-tyCoFVsOfTypes (ty:tys) fv_cand in_scope acc = (tyCoFVsOfType ty `unionFV` tyCoFVsOfTypes tys) fv_cand in_scope acc
-tyCoFVsOfTypes []       fv_cand in_scope acc = emptyFV fv_cand in_scope acc
+tyCoFVsOfTypes tty = go (toList tty)
+  where
+    go (ty:tys) fv_cand in_scope acc = (tyCoFVsOfType ty `unionFV` go tys) fv_cand in_scope acc
+    go []       fv_cand in_scope acc = emptyFV fv_cand in_scope acc
 
 tyCoVarsOfCo :: Coercion -> TyCoVarSet
 -- See Note [Free variables of types]
@@ -2089,7 +2092,7 @@ checkValidSubst ::
 #if MIN_VERSION_GLASGOW_HASKELL(7,10,2,0)
     (?callStack :: CallStack) =>
 #endif
-    TCvSubst -> [Type] -> [Coercion] -> a -> a
+    (Traversable t) => TCvSubst -> t Type -> [Coercion] -> a -> a
 checkValidSubst subst@(TCvSubst in_scope tenv cenv) tys cos a
   = ASSERT2( isValidTCvSubst subst,
              text "in_scope" <+> ppr in_scope $$
@@ -2099,15 +2102,19 @@ checkValidSubst subst@(TCvSubst in_scope tenv cenv) tys cos a
              text "cenv" <+> ppr cenv $$
              text "cenvFVs"
                <+> ppr (tyCoVarsOfCosSet cenv) $$
-             text "tys" <+> ppr tys $$
+             text "tys" <+> ppr (toList tys) $$
              text "cos" <+> ppr cos )
     ASSERT2( tysCosFVsInScope,
              text "in_scope" <+> ppr in_scope $$
              text "tenv" <+> ppr tenv $$
              text "cenv" <+> ppr cenv $$
-             text "tys" <+> ppr tys $$
+             text "tys" <+> ppr (toList tys) $$
              text "cos" <+> ppr cos $$
              text "needInScope" <+> ppr needInScope )
+    -- @toList@ (twice) above because @t a@ may not be @Outputable@. An
+    -- alternative would require @Outputable (t a)@, in the case of lists of
+    -- types with multiplicities, for instance, it may print a better error
+    -- message.
     a
   where
   substDomain = nonDetKeysUFM tenv ++ nonDetKeysUFM cenv
@@ -2149,10 +2156,10 @@ substTys ::
 #if MIN_VERSION_GLASGOW_HASKELL(7,10,2,0)
     (?callStack :: CallStack) =>
 #endif
-    TCvSubst -> [Type] -> [Type]
+    (Traversable t) => TCvSubst -> t Type -> t Type
 substTys subst tys
   | isEmptyTCvSubst subst = tys
-  | otherwise = checkValidSubst subst tys [] $ map (subst_ty subst) tys
+  | otherwise = checkValidSubst subst tys [] $ fmap (subst_ty subst) tys
 
 -- | Substitute within several 'Type's disabling the sanity checks.
 -- The problems that the sanity checks in substTys catch are described in
@@ -2874,7 +2881,7 @@ pprDataConWithArgs dc = sep [forAllDoc, thetaDoc, ppr dc <+> argsDoc]
     ex_bndrs   = dataConExTyVarBinders dc
     forAllDoc = pprUserForAll $ (filterEqSpec eq_spec univ_bndrs ++ ex_bndrs)
     thetaDoc  = pprThetaArrowTy theta
-    argsDoc   = hsep (fmap pprParendType arg_tys)
+    argsDoc   = hsep (fmap pprParendType (map weightedThing arg_tys)) -- TODO: arnaud: do I have to do something in order to print arrows correctly for linear constructor?
 
 
 pprTypeApp :: TyCon -> [Type] -> SDoc

@@ -26,6 +26,7 @@ import qualified Coercion ( Role(..) )
 import TysWiredIn
 import TysPrim (eqPrimTyCon)
 import BasicTypes as Hs
+import Weight
 import ForeignCall
 import Unique
 import ErrUtils
@@ -481,7 +482,7 @@ cvtConstr (NormalC c strtys)
   = do  { c'   <- cNameL c
         ; cxt' <- returnL []
         ; tys' <- mapM cvt_arg strtys
-        ; returnL $ mkConDeclH98 c' Nothing cxt' (PrefixCon tys') }
+        ; returnL $ mkConDeclH98 c' Nothing cxt' (PrefixCon (map unrestricted tys')) }
 
 cvtConstr (RecC c varstrtys)
   = do  { c'    <- cNameL c
@@ -495,7 +496,7 @@ cvtConstr (InfixC st1 c st2)
         ; cxt' <- returnL []
         ; st1' <- cvt_arg st1
         ; st2' <- cvt_arg st2
-        ; returnL $ mkConDeclH98 c' Nothing cxt' (InfixCon st1' st2') }
+        ; returnL $ mkConDeclH98 c' Nothing cxt' (InfixCon (unrestricted st1') (unrestricted st2')) }
 
 cvtConstr (ForallC tvs ctxt con)
   = do  { tvs'        <- cvtTvs tvs

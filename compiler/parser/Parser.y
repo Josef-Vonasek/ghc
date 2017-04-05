@@ -59,6 +59,7 @@ import BasicTypes
 
 -- compiler/types
 import Type             ( funTyCon, Rig(..) )
+import Weight           ( linear )
 import Kind             ( Kind )
 import Class            ( FunDep )
 
@@ -1922,7 +1923,7 @@ constr_stuff :: { Located (Located RdrName, HsConDeclDetails RdrName) }
         : btype_no_ops                         {% do { c <- splitCon $1
                                                      ; return $ sLL $1 $> c } }
         | btype_no_ops conop btype_no_ops      {% do { ty <- splitTilde $1
-                                                     ; return $ sLL $1 $> ($2, InfixCon ty $3) } }
+                                                     ; return $ sLL $1 $> ($2, InfixCon (linear ty) (linear $3)) } }
 
 fielddecls :: { [LConDeclField RdrName] }
         : {- empty -}     { [] }

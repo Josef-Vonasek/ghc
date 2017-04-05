@@ -41,6 +41,7 @@ import ErrUtils
 import MonadUtils -- MonadIO
 import Var        -- EvVar
 import Type
+import Weight
 import UniqSupply
 import DsGRHSs    -- isTrueLHsExpr
 
@@ -696,7 +697,7 @@ mkOneConFull x con = do
   (subst, ex_tvs') <- cloneTyVarBndrs subst1 ex_tvs <$> getUniqueSupplyM
 
   -- Fresh term variables (VAs) as arguments to the constructor
-  arguments <-  mapM mkPmVar (substTys subst arg_tys)
+  arguments <-  mapM mkPmVar (substTys subst (map weightedThing arg_tys))
   -- All constraints bound by the constructor (alpha-renamed)
   let theta_cs = substTheta subst (eqSpecPreds eq_spec ++ thetas)
   evvars <- mapM (nameType "pm") theta_cs

@@ -70,6 +70,7 @@ import Annotations
 import CoreSyn
 import Class
 import TyCon
+import Weight
 import CoAxiom
 import ConLike
 import DataCon
@@ -1316,7 +1317,7 @@ patSynToIfaceDecl ps
                 , ifPatExBndrs    = map toIfaceForAllBndr ex_bndrs'
                 , ifPatProvCtxt   = tidyToIfaceContext env2 prov_theta
                 , ifPatReqCtxt    = tidyToIfaceContext env2 req_theta
-                , ifPatArgs       = map (tidyToIfaceType env2) args
+                , ifPatArgs       = map (tidyToIfaceType env2) (map weightedThing args) -- arnaud: TODO: pattern synonym are not handled right. This weightedThing will eventually go.
                 , ifPatTy         = tidyToIfaceType env2 rhs_ty
                 , ifFieldLabels   = (patSynFieldLabels ps)
                 }
@@ -1477,7 +1478,7 @@ tyConToIfaceDecl env tycon
                     ifConExTvs   = map toIfaceForAllBndr ex_bndrs',
                     ifConEqSpec  = map (to_eq_spec . eqSpecPair) eq_spec,
                     ifConCtxt    = tidyToIfaceContext con_env2 theta,
-                    ifConArgTys  = map (tidyToIfaceType con_env2) arg_tys,
+                    ifConArgTys  = map (fmap (tidyToIfaceType con_env2)) arg_tys,
                     ifConFields  = map (nameOccName . flSelector)
                                        (dataConFieldLabels data_con),
                     ifConStricts = map (toIfaceBang con_env2)

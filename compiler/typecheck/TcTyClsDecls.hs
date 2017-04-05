@@ -71,6 +71,7 @@ import BasicTypes
 import qualified GHC.LanguageExtensions as LangExt
 
 import Control.Monad
+import Data.Functor.Compose ( Compose(..) )
 import Data.List
 
 {-
@@ -593,7 +594,7 @@ kcConDecl (ConDeclH98 { con_name = name, con_qvars = ex_tvs
     do { _ <- kcHsTyVarBndrs (unLoc name) False False False
                              ((fromMaybe emptyLHsQTvs ex_tvs)) $
               do { _ <- tcHsContext (fromMaybe (noLoc []) ex_ctxt)
-                 ; mapM_ (tcHsOpenType . getBangType) (hsConDeclArgTys details)
+                 ; mapM_ (tcHsOpenType . getBangType) (map weightedThing $ hsConDeclArgTys details)
                  ; return (panic "kcConDecl", ()) }
               -- We don't need to check the telescope here, because that's
               -- done in tcConDecl
@@ -1455,7 +1456,7 @@ tcConDecl new_or_data rep_tycon tmpl_bndrs res_tmpl
                  ; field_lbls <- lookupConstructorFields (unLoc name)
                  ; let (arg_tys, stricts) = unzip btys
                        bound_vars  = allBoundVariabless ctxt `unionVarSet`
-                                     allBoundVariabless arg_tys
+                                     allBoundVariabless (map weightedThing arg_tys)
                  ; return ((exp_tvs, ctxt, arg_tys, field_lbls, stricts), bound_vars)
                  }
          -- imp_tvs are user-written kind variables, without an explicit binding site
@@ -1467,7 +1468,7 @@ tcConDecl new_or_data rep_tycon tmpl_bndrs res_tmpl
        ; let all_user_tvs = imp_tvs ++ exp_tvs
        ; vars <- zonkTcTypeAndSplitDepVars (mkSpecForAllTys all_user_tvs $
                                             mkFunTys (map unrestricted ctxt) $
-                                            mkFunTys (map unrestricted arg_tys) $
+                                            mkFunTys arg_tys $
                                             unitTy)
                  -- That type is a lie, of course. (It shouldn't end in ()!)
                  -- And we could construct a proper result type from the info
@@ -1481,7 +1482,7 @@ tcConDecl new_or_data rep_tycon tmpl_bndrs res_tmpl
              -- Zonk to Types
        ; (ze, qkvs)      <- zonkTyBndrsX emptyZonkEnv kvs
        ; (ze, user_qtvs) <- zonkTyBndrsX ze all_user_tvs
-       ; arg_tys         <- zonkTcTypeToTypes ze arg_tys
+       ; Compose arg_tys <- zonkTcTypeToTypes ze (Compose arg_tys)
        ; ctxt            <- zonkTcTypeToTypes ze ctxt
 
        ; fam_envs <- tcGetFamInstEnvs
@@ -1518,13 +1519,13 @@ tcConDecl _new_or_data rep_tycon tmpl_bndrs res_tmpl
 
        ; vars <- zonkTcTypeAndSplitDepVars (mkSpecForAllTys user_tvs $
                                             mkFunTys (map unrestricted ctxt) $
-                                            mkFunTys (map unrestricted arg_tys) $
+                                            mkFunTys arg_tys $
                                             res_ty)
        ; tkvs <- quantifyZonkedTyVars emptyVarSet vars
 
              -- Zonk to Types
        ; (ze, qtkvs) <- zonkTyBndrsX emptyZonkEnv (tkvs ++ user_tvs)
-       ; arg_tys <- zonkTcTypeToTypes ze arg_tys
+       ; Compose arg_tys <- zonkTcTypeToTypes ze (Compose arg_tys)
        ; ctxt    <- zonkTcTypeToTypes ze ctxt
        ; res_ty  <- zonkTcTypeToType ze res_ty
 
@@ -1552,7 +1553,7 @@ tcConDecl _new_or_data rep_tycon tmpl_bndrs res_tmpl
                             stricts Nothing field_lbls
                             univ_bndrs ex_bndrs eq_preds
                             (substTys arg_subst ctxt)
-                            (substTys arg_subst arg_tys)
+                            (getCompose $ substTys arg_subst (Compose arg_tys))
                             (substTy  arg_subst res_ty')
                             rep_tycon
                   -- NB:  we put data_tc, the type constructor gotten from the
@@ -1565,8 +1566,8 @@ tcConDecl _new_or_data rep_tycon tmpl_bndrs res_tmpl
 
 
 tcGadtSigType :: SDoc -> Name -> LHsSigType Name
-              -> TcM ( [TcTyVar], [PredType],[HsSrcBang], [FieldLabel], [Type], Type
-                     , HsConDetails (LHsType Name)
+              -> TcM ( [TcTyVar], [PredType],[HsSrcBang], [FieldLabel], [Weighted Type], Type
+                     , HsConDetails (Weighted (LHsType Name))
                                     (Located [LConDeclField Name]) )
 tcGadtSigType doc name ty@(HsIB { hsib_vars = vars })
   = do { let (hs_details', res_ty', cxt, gtvs) = gadtDeclDetails ty
@@ -1581,7 +1582,7 @@ tcGadtSigType doc name ty@(HsIB { hsib_vars = vars })
                  ; field_lbls <- lookupConstructorFields name
                  ; let (arg_tys, stricts) = unzip btys
                        bound_vars = allBoundVariabless ctxt `unionVarSet`
-                                    allBoundVariabless arg_tys
+                                    allBoundVariabless (map weightedThing arg_tys)
 
                  ; return ((exp_tvs, ctxt, arg_tys, ty', field_lbls, stricts), bound_vars)
                  }
@@ -1589,7 +1590,7 @@ tcGadtSigType doc name ty@(HsIB { hsib_vars = vars })
        }
 
 tcConIsInfixH98 :: Name
-             -> HsConDetails (LHsType Name) (Located [LConDeclField Name])
+             -> HsConDetails arg rec
              -> TcM Bool
 tcConIsInfixH98 _   details
   = case details of
@@ -1597,7 +1598,7 @@ tcConIsInfixH98 _   details
            _            -> return False
 
 tcConIsInfixGADT :: Name
-             -> HsConDetails (LHsType Name) (Located [LConDeclField Name])
+             -> HsConDetails arg rec
              -> TcM Bool
 tcConIsInfixGADT con details
   = case details of
@@ -1611,7 +1612,7 @@ tcConIsInfixGADT con details
                | otherwise -> return False
 
 tcConArgs :: NewOrData -> HsConDeclDetails Name
-          -> TcM [(TcType, HsSrcBang)]
+          -> TcM [(Weighted TcType, HsSrcBang)]
 tcConArgs new_or_data (PrefixCon btys)
   = mapM (tcConArg new_or_data) btys
 tcConArgs new_or_data (InfixCon bty1 bty2)
@@ -1622,18 +1623,18 @@ tcConArgs new_or_data (RecCon fields)
   = mapM (tcConArg new_or_data) btys
   where
     -- We need a one-to-one mapping from field_names to btys
-    combined = map (\(L _ f) -> (cd_fld_names f,cd_fld_type f)) (unLoc fields)
+    combined = map (\(L _ f) -> (cd_fld_names f,linear (cd_fld_type f))) (unLoc fields) -- TODO: arnaud: the @linear@ here duplicates logic, maybe it's better to make a function such that record field types are returned with their linear multiplicity (grep @linear@ in the code to find the other occurrences of this logic)
     explode (ns,ty) = zip ns (repeat ty)
     exploded = concatMap explode combined
     (_,btys) = unzip exploded
 
 
-tcConArg :: NewOrData -> LHsType Name -> TcM (TcType, HsSrcBang)
-tcConArg new_or_data bty
+tcConArg :: NewOrData -> Weighted (LHsType Name) -> TcM (Weighted TcType, HsSrcBang)
+tcConArg new_or_data (Weighted w bty)
   = do  { traceTc "tcConArg 1" (ppr bty)
         ; arg_ty <- tcHsConArgType new_or_data bty
         ; traceTc "tcConArg 2" (ppr bty)
-        ; return (arg_ty, getBangStrictness bty) }
+        ; return (Weighted w arg_ty, getBangStrictness bty) }
 
 {-
 Note [Wrong visibility for GADTs]
@@ -2577,7 +2578,7 @@ checkValidRoles tc
     check_dc_roles datacon
       = do { traceTc "check_dc_roles" (ppr datacon <+> ppr (tyConRoles tc))
            ; mapM_ (check_ty_roles role_env Representational) $
-                    eqSpecPreds eq_spec ++ theta ++ arg_tys }
+                    eqSpecPreds eq_spec ++ theta ++ (map weightedThing arg_tys) }
                     -- See Note [Role-checking data constructor arguments] in TcTyDecls
       where
         (univ_tvs, ex_tvs, eq_spec, theta, arg_tys, _res_ty)

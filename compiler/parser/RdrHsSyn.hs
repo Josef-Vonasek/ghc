@@ -68,6 +68,7 @@ module RdrHsSyn (
 import HsSyn            -- Lots of it
 import Class            ( FunDep )
 import TyCon            ( TyCon, isTupleTyCon, tyConSingleDataCon_maybe )
+import Weight
 import DataCon          ( DataCon, dataConTyCon )
 import ConLike          ( ConLike(..) )
 import CoAxiom          ( Role, fsFromRole )
@@ -468,11 +469,11 @@ splitCon ty
    split (L l (HsTyVar (L _ tc)))  ts = do data_con <- tyConToDataCon l tc
                                            return (data_con, mk_rest ts)
    split (L l (HsTupleTy HsBoxedOrConstraintTuple ts)) []
-      = return (L l (getRdrName (tupleDataCon Boxed (length ts))), PrefixCon ts)
+      = return (L l (getRdrName (tupleDataCon Boxed (length ts))), PrefixCon (map linear ts))
    split (L l _) _ = parseErrorSDoc l (text "Cannot parse data constructor in a data/newtype declaration:" <+> ppr ty)
 
    mk_rest [L l (HsRecTy flds)] = RecCon (L l flds)
-   mk_rest ts                   = PrefixCon ts
+   mk_rest ts                   = PrefixCon (map linear ts)
 
 tyConToDataCon :: SrcSpan -> RdrName -> P (Located RdrName)
 -- See Note [Parsing data constructors is hard]
